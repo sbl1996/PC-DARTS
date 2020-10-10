@@ -15,6 +15,7 @@ import torch.backends.cudnn as cudnn
 
 from torch.autograd import Variable
 from architect import Architect
+# from model_search import Network
 from hinas.models.darts.search.pc_darts import Network
 
 from horch.datasets import train_test_split
@@ -98,7 +99,7 @@ def main():
         train_data = dset.CIFAR100(root=args.data, train=True, download=True, transform=train_transform)
     else:
         train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
-    train_data =  train_test_split(train_data, 0.1)[1]
+    # train_data =  train_test_split(train_data, 0.1)[1]
     num_train = len(train_data)
     indices = list(range(num_train))
     split = int(np.floor(args.train_portion * num_train))
