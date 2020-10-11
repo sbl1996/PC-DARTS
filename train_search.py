@@ -15,10 +15,7 @@ import torch.backends.cudnn as cudnn
 
 from torch.autograd import Variable
 from architect import Architect
-# from model_search import Network
-from hinas.models.darts.search.pc_darts import Network
-
-from horch.datasets import train_test_split
+from model_search import Network
 
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
