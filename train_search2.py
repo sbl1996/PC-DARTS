@@ -19,6 +19,7 @@ from architect import Architect
 from hinas.models.darts.search.pc_darts import Network
 
 from horch.datasets import train_test_split
+from horch.defaults import set_defaults
 
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
@@ -77,6 +78,14 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     criterion = criterion.cuda()
+    set_defaults({
+        'relu': {
+            'inplace': False,
+        },
+        'bn': {
+            'affine': False,
+        }
+    })
     model = Network(args.init_channels, args.layers, num_classes=CIFAR_CLASSES)
     model = model.cuda()
 
