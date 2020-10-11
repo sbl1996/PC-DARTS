@@ -58,6 +58,11 @@ CIFAR_CLASSES = 10
 if args.set == 'cifar100':
     CIFAR_CLASSES = 100
 
+def requires_grad(network: Network, arch: bool, model: bool):
+    for p in network.arch_parameters():
+        p.requires_grad_(arch)
+    for p in network.model_parameters():
+        p.requires_grad_(model)
 
 def main():
     if not torch.cuda.is_available():
@@ -161,11 +166,14 @@ def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer,
             input_search = input_search.cuda()
             target_search = target_search.cuda(non_blocking=True)
 
+            requires_grad(model, arch=True, model=False)
             optimizer_arch.zero_grad()
-            loss = criterion(input_search, target_search)
+            logits_search = model(input_search)
+            loss = criterion(logits_search, target_search)
             loss.backward()
             optimizer_arch.step()
 
+        requires_grad(model, arch=False, model=True)
         optimizer.zero_grad()
         logits = model(input)
         loss = criterion(logits, target)
