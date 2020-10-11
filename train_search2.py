@@ -13,9 +13,6 @@ import torch.nn.functional as F
 import torchvision.datasets as dset
 import torch.backends.cudnn as cudnn
 
-from torch.autograd import Variable
-from architect import Architect
-# from model_search import Network
 from hinas.models.darts.search.pc_darts import Network
 
 from horch.datasets import train_test_split
@@ -89,12 +86,6 @@ def main():
     model = Network(args.init_channels, args.layers, num_classes=CIFAR_CLASSES)
     model = model.cuda()
 
-    def _loss(self, input, target):
-        logits = self(input)
-        return criterion(logits, target)
-
-    Network._loss = _loss
-
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
     optimizer = torch.optim.SGD(
@@ -109,10 +100,6 @@ def main():
     else:
         train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
 
-    num_train = len(train_data)
-    indices = list(range(num_train))
-    split = int(np.floor(args.train_portion * num_train))
-
     ds_train, ds_search = train_test_split(
         train_data, test_ratio=0.5, shuffle=True, random_state=args.seed)
 
@@ -125,7 +112,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, float(args.epochs), eta_min=args.learning_rate_min)
 
-    architect = Architect(model, args)
+    optimizer_arch = torch.optim.Adam(model.arch_parameters(), lr=args.arch_learning_rate, betas=(0.5, 0.999), weight_decay=args.arch_weight_decay)
 
     for epoch in range(args.epochs):
         scheduler.step()
@@ -140,7 +127,7 @@ def main():
         print(F.softmax(model.betas_normal[2:5], dim=-1))
         # model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
         # training
-        train_acc, train_obj = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr, epoch)
+        train_acc, train_obj = train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer, lr, epoch)
         logging.info('train_acc %f', train_acc)
 
         # validation
@@ -151,7 +138,7 @@ def main():
         utils.save(model, os.path.join(args.save, 'weights.pt'))
 
 
-def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr, epoch):
+def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer, lr, epoch):
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
@@ -164,23 +151,27 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr, 
 
         # get a random minibatch from the search queue with replacement
         # input_search, target_search = next(iter(valid_queue))
-        try:
-            input_search, target_search = next(valid_queue_iter)
-        except:
-            valid_queue_iter = iter(valid_queue)
-            input_search, target_search = next(valid_queue_iter)
-        input_search = input_search.cuda()
-        target_search = target_search.cuda(non_blocking=True)
 
         if epoch >= 15:
-            architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=args.unrolled)
+            try:
+                input_search, target_search = next(valid_queue_iter)
+            except:
+                valid_queue_iter = iter(valid_queue)
+                input_search, target_search = next(valid_queue_iter)
+            input_search = input_search.cuda()
+            target_search = target_search.cuda(non_blocking=True)
+
+            optimizer_arch.zero_grad()
+            loss = criterion(input_search, target_search)
+            loss.backward()
+            optimizer_arch.step()
 
         optimizer.zero_grad()
         logits = model(input)
         loss = criterion(logits, target)
 
         loss.backward()
-        nn.utils.clip_grad_norm(model.model_parameters(), args.grad_clip)
+        nn.utils.clip_grad_norm_(model.model_parameters(), args.grad_clip)
         optimizer.step()
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
