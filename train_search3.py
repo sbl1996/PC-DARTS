@@ -139,7 +139,7 @@ def main():
 
     learner = DARTSLearner(model, criterion, optimizer_arch, optimizer_model, scheduler,
                            train_metrics=train_metrics, eval_metrics=eval_metrics,
-                           search_loader=valid_queue, grad_clip_norm=5.0)
+                           search_loader=valid_queue, grad_clip_norm=5.0, work_dir='models')
 
     for epoch in range(args.epochs):
         scheduler.step()
