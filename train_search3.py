@@ -10,6 +10,7 @@ import argparse
 import torch.nn as nn
 import torch.utils
 import torch.nn.functional as F
+from hinas.train.darts import DARTSLearner
 from torch.utils.data import DataLoader
 
 from torchvision.datasets import CIFAR10
@@ -24,6 +25,9 @@ from horch.optim.lr_scheduler import CosineLR
 from horch.train import manual_seed
 
 from hinas.models.darts.search.pc_darts import Network
+
+from horch.train.cls.metrics import Accuracy
+from horch.train.metrics import TrainLoss, Loss
 
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
@@ -107,7 +111,6 @@ def main():
         }
     })
     model = Network(args.init_channels, args.layers, num_classes=CIFAR_CLASSES)
-    model = model.cuda()
     criterion = nn.CrossEntropyLoss()
 
     optimizer_arch = Adam(
@@ -124,6 +127,20 @@ def main():
     scheduler = CosineLR(
         optimizer_model, float(args.epochs), min_lr=args.learning_rate_min)
 
+    train_metrics = {
+        "loss": TrainLoss(),
+        "acc": Accuracy(),
+    }
+
+    eval_metrics = {
+        "loss": Loss(criterion),
+        "acc": Accuracy(),
+    }
+
+    learner = DARTSLearner(model, criterion, optimizer_arch, optimizer_model, scheduler,
+                           train_metrics=train_metrics, eval_metrics=eval_metrics,
+                           search_loader=valid_queue, grad_clip_norm=5.0)
+
     for epoch in range(args.epochs):
         scheduler.step()
         lr = scheduler.get_lr()[0]
@@ -136,54 +153,40 @@ def main():
         print(F.softmax(model.alphas_reduce, dim=-1))
         print(F.softmax(model.betas_normal[2:5], dim=-1))
         # training
-        train_acc, train_obj = train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer_model, epoch)
+
+        train_acc, train_obj = train(learner, train_queue, epoch)
         logging.info('train_acc %f', train_acc)
 
         # validation
-        if args.epochs - epoch <= 1:
-            valid_acc, valid_obj = infer(valid_queue, model, criterion)
-            logging.info('valid_acc %f', valid_acc)
+        # if args.epochs - epoch <= 1:
+        #     valid_acc, valid_obj = infer(valid_queue, model, criterion)
+        #     logging.info('valid_acc %f', valid_acc)
 
         utils.save(model, os.path.join(args.save, 'weights.pt'))
 
 
-def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer_model, epoch):
+def train(learner, train_queue, epoch):
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
 
+    state = learner._state['train']
+    state.update({
+        "epoch": epoch,
+        "steps": len(train_queue),
+    })
     for step, batch in enumerate(train_queue):
-        model.train()
-        input, target = convert_tensor(batch, 'cuda')
-
-        # get a random minibatch from the search queue with replacement
-        # input_search, target_search = next(iter(valid_queue))
-
+        state['step'] =  step
         if epoch >= 15:
-            try:
-                input_search, target_search = next(valid_queue_iter)
-            except:
-                valid_queue_iter = iter(valid_queue)
-                input_search, target_search = next(valid_queue_iter)
-            input_search, target_search = convert_tensor((input_search, target_search), 'cuda')
-            requires_grad(model, arch=True, model=False)
-            optimizer_arch.zero_grad()
-            logits_search = model(input_search)
-            loss = criterion(logits_search, target_search)
-            loss.backward()
-            optimizer_arch.step()
+            learner.train_arch = True
+        learner.train_batch(batch)
 
-        requires_grad(model, arch=False, model=True)
-        optimizer_model.zero_grad()
-        logits = model(input)
-        loss = criterion(logits, target)
-        loss.backward()
-        nn.utils.clip_grad_norm_(model.model_parameters(), args.grad_clip)
-        optimizer_model.step()
-
-        n = input.size(0)
+        logits = state['y_pred']
+        target = state['y_true']
+        n = state['batch_size']
+        loss = state['loss']
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-        objs.update(loss.data.item(), n)
+        objs.update(loss, n)
         top1.update(prec1.data.item(), n)
         top5.update(prec5.data.item(), n)
 
