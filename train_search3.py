@@ -10,13 +10,16 @@ import argparse
 import torch.nn as nn
 import torch.utils
 import torch.nn.functional as F
-import torchvision.datasets as dset
-import torch.backends.cudnn as cudnn
+from torch.utils.data import DataLoader
 
-from hinas.models.darts.search.pc_darts import Network
+from torchvision.datasets import CIFAR10
+from torchvision.transforms import Compose, RandomCrop, RandomHorizontalFlip, ToTensor, Normalize
 
 from horch.datasets import train_test_split
 from horch.defaults import set_defaults
+from horch.train import manual_seed
+
+from hinas.models.darts.search.pc_darts import Network
 
 parser = argparse.ArgumentParser("cifar")
 parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
@@ -58,28 +61,45 @@ CIFAR_CLASSES = 10
 if args.set == 'cifar100':
     CIFAR_CLASSES = 100
 
+
 def requires_grad(network: Network, arch: bool, model: bool):
     for p in network.arch_parameters():
         p.requires_grad_(arch)
     for p in network.model_parameters():
         p.requires_grad_(model)
 
-def main():
-    if not torch.cuda.is_available():
-        logging.info('no gpu device available')
-        sys.exit(1)
 
-    np.random.seed(args.seed)
-    torch.cuda.set_device(args.gpu)
-    cudnn.benchmark = True
-    torch.manual_seed(args.seed)
-    cudnn.enabled = True
-    torch.cuda.manual_seed(args.seed)
-    logging.info('gpu device = %d' % args.gpu)
-    logging.info("args = %s", args)
+def main():
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    manual_seed(args.seed)
+
+    train_transform = Compose([
+        RandomCrop(32, padding=4),
+        RandomHorizontalFlip(),
+        ToTensor(),
+        Normalize([0.491, 0.482, 0.447], [0.247, 0.243, 0.262]),
+    ])
+
+    valid_transform = Compose([
+        ToTensor(),
+        Normalize([0.491, 0.482, 0.447], [0.247, 0.243, 0.262]),
+    ])
+
+    ds = CIFAR10(root=args.data, train=True, download=True)
+
+    ds_train, ds_search = train_test_split(
+        ds, test_ratio=0.5, shuffle=True, random_state=args.seed,
+        transform=train_transform, test_transform=train_transform)
+
+    train_queue = DataLoader(
+        ds_train, batch_size=args.batch_size, pin_memory=True, shuffle=True, num_workers=2)
+
+    valid_queue = DataLoader(
+        ds_search, batch_size=args.batch_size, pin_memory=True, shuffle=True, num_workers=2)
 
     criterion = nn.CrossEntropyLoss()
-    criterion = criterion.cuda()
     set_defaults({
         'relu': {
             'inplace': False,
@@ -99,25 +119,11 @@ def main():
         momentum=args.momentum,
         weight_decay=args.weight_decay)
 
-    train_transform, valid_transform = utils._data_transforms_cifar10(args)
-    if args.set == 'cifar100':
-        train_data = dset.CIFAR100(root=args.data, train=True, download=True, transform=train_transform)
-    else:
-        train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
-
-    ds_train, ds_search = train_test_split(
-        train_data, test_ratio=0.5, shuffle=True, random_state=args.seed)
-
-    train_queue = torch.utils.data.DataLoader(
-        ds_train, batch_size=args.batch_size, pin_memory=True, num_workers=2, shuffle=True)
-
-    valid_queue = torch.utils.data.DataLoader(
-        ds_search, batch_size=args.batch_size, pin_memory=True, num_workers=2, shuffle=True)
-
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, float(args.epochs), eta_min=args.learning_rate_min)
 
-    optimizer_arch = torch.optim.Adam(model.arch_parameters(), lr=args.arch_learning_rate, betas=(0.5, 0.999), weight_decay=args.arch_weight_decay)
+    optimizer_arch = torch.optim.Adam(model.arch_parameters(), lr=args.arch_learning_rate, betas=(0.5, 0.999),
+                                      weight_decay=args.arch_weight_decay)
 
     for epoch in range(args.epochs):
         scheduler.step()
