@@ -15,8 +15,12 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import CIFAR10
 from torchvision.transforms import Compose, RandomCrop, RandomHorizontalFlip, ToTensor, Normalize
 
+from torch.optim import SGD, Adam
+
+from horch.common import convert_tensor
 from horch.datasets import train_test_split
 from horch.defaults import set_defaults
+from horch.optim.lr_scheduler import CosineLR
 from horch.train import manual_seed
 
 from hinas.models.darts.search.pc_darts import Network
@@ -82,11 +86,6 @@ def main():
         Normalize([0.491, 0.482, 0.447], [0.247, 0.243, 0.262]),
     ])
 
-    valid_transform = Compose([
-        ToTensor(),
-        Normalize([0.491, 0.482, 0.447], [0.247, 0.243, 0.262]),
-    ])
-
     ds = CIFAR10(root=args.data, train=True, download=True)
 
     ds_train, ds_search = train_test_split(
@@ -99,7 +98,6 @@ def main():
     valid_queue = DataLoader(
         ds_search, batch_size=args.batch_size, pin_memory=True, shuffle=True, num_workers=2)
 
-    criterion = nn.CrossEntropyLoss()
     set_defaults({
         'relu': {
             'inplace': False,
@@ -110,20 +108,21 @@ def main():
     })
     model = Network(args.init_channels, args.layers, num_classes=CIFAR_CLASSES)
     model = model.cuda()
+    criterion = nn.CrossEntropyLoss()
 
-    logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
-
-    optimizer = torch.optim.SGD(
+    optimizer_arch = Adam(
+        model.arch_parameters(),
+        lr=args.arch_learning_rate,
+        betas=(0.5, 0.999),
+        weight_decay=args.arch_weight_decay)
+    optimizer_model = SGD(
         model.model_parameters(),
         args.learning_rate,
         momentum=args.momentum,
         weight_decay=args.weight_decay)
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, float(args.epochs), eta_min=args.learning_rate_min)
-
-    optimizer_arch = torch.optim.Adam(model.arch_parameters(), lr=args.arch_learning_rate, betas=(0.5, 0.999),
-                                      weight_decay=args.arch_weight_decay)
+    scheduler = CosineLR(
+        optimizer_model, float(args.epochs), min_lr=args.learning_rate_min)
 
     for epoch in range(args.epochs):
         scheduler.step()
@@ -136,9 +135,8 @@ def main():
         print(F.softmax(model.alphas_normal, dim=-1))
         print(F.softmax(model.alphas_reduce, dim=-1))
         print(F.softmax(model.betas_normal[2:5], dim=-1))
-        # model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
         # training
-        train_acc, train_obj = train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer, lr, epoch)
+        train_acc, train_obj = train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer_model, epoch)
         logging.info('train_acc %f', train_acc)
 
         # validation
@@ -149,16 +147,14 @@ def main():
         utils.save(model, os.path.join(args.save, 'weights.pt'))
 
 
-def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer, lr, epoch):
+def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer_model, epoch):
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
 
-    for step, (input, target) in enumerate(train_queue):
+    for step, batch in enumerate(train_queue):
         model.train()
-        n = input.size(0)
-        input = input.cuda()
-        target = target.cuda(non_blocking=True)
+        input, target = convert_tensor(batch, 'cuda')
 
         # get a random minibatch from the search queue with replacement
         # input_search, target_search = next(iter(valid_queue))
@@ -169,9 +165,7 @@ def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer,
             except:
                 valid_queue_iter = iter(valid_queue)
                 input_search, target_search = next(valid_queue_iter)
-            input_search = input_search.cuda()
-            target_search = target_search.cuda(non_blocking=True)
-
+            input_search, target_search = convert_tensor((input_search, target_search), 'cuda')
             requires_grad(model, arch=True, model=False)
             optimizer_arch.zero_grad()
             logits_search = model(input_search)
@@ -180,14 +174,14 @@ def train(train_queue, valid_queue, model, optimizer_arch, criterion, optimizer,
             optimizer_arch.step()
 
         requires_grad(model, arch=False, model=True)
-        optimizer.zero_grad()
+        optimizer_model.zero_grad()
         logits = model(input)
         loss = criterion(logits, target)
-
         loss.backward()
         nn.utils.clip_grad_norm_(model.model_parameters(), args.grad_clip)
-        optimizer.step()
+        optimizer_model.step()
 
+        n = input.size(0)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         objs.update(loss.data.item(), n)
         top1.update(prec1.data.item(), n)
