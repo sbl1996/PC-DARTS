@@ -66,16 +66,6 @@ fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 
 CIFAR_CLASSES = 10
-if args.set == 'cifar100':
-    CIFAR_CLASSES = 100
-
-
-def requires_grad(network: Network, arch: bool, model: bool):
-    for p in network.arch_parameters():
-        p.requires_grad_(arch)
-    for p in network.model_parameters():
-        p.requires_grad_(model)
-
 
 def main():
     torch.backends.cudnn.enabled = True
@@ -157,11 +147,6 @@ def main():
         train_acc, train_obj = train(learner, train_queue, epoch)
         logging.info('train_acc %f', train_acc)
 
-        # validation
-        # if args.epochs - epoch <= 1:
-        #     valid_acc, valid_obj = infer(valid_queue, model, criterion)
-        #     logging.info('valid_acc %f', valid_acc)
-
         utils.save(model, os.path.join(args.save, 'weights.pt'))
 
 
@@ -176,9 +161,8 @@ def train(learner, train_queue, epoch):
         "steps": len(train_queue),
     })
     for step, batch in enumerate(train_queue):
-        state['step'] =  step
-        if epoch >= 15:
-            learner.train_arch = True
+        state['step'] = step
+        learner.train_arch = epoch >= 15
         learner.train_batch(batch)
 
         logits = state['y_pred']
@@ -192,31 +176,6 @@ def train(learner, train_queue, epoch):
 
         if step % args.report_freq == 0:
             logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-
-    return top1.avg, objs.avg
-
-
-def infer(valid_queue, model, criterion):
-    objs = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
-    model.eval()
-
-    with torch.no_grad():
-        for step, (input, target) in enumerate(valid_queue):
-            input = input.cuda()
-            target = target.cuda(non_blocking=True)
-            logits = model(input)
-            loss = criterion(logits, target)
-
-            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-            n = input.size(0)
-            objs.update(loss.data.item(), n)
-            top1.update(prec1.data.item(), n)
-            top5.update(prec5.data.item(), n)
-
-            if step % args.report_freq == 0:
-                logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
 
     return top1.avg, objs.avg
 
